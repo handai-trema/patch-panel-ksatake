@@ -1,7 +1,8 @@
 # Software patch-panel.
 class PatchPanel < Trema::Controller
   def start(_args)
-    @patch = Hash.new { [] }
+    @patch = Hash.new { |hash,key| hash[key]=[] }
+    @mirror_patch = Hash.new { |hash,key| hash[key]=[]  }
     logger.info 'PatchPanel started.'
   end
 
@@ -10,16 +11,38 @@ class PatchPanel < Trema::Controller
       delete_flow_entries dpid, port_a, port_b
       add_flow_entries dpid, port_a, port_b
     end
+    @mirror_patch[dpid].each do |monitor_port, mirror_port|
+      delete_flow_entries dpid, monitor_port, mirror_port
+      add_flow_entries dpid, monitor_port, mirror_port
+    end
   end
 
   def create_patch(dpid, port_a, port_b)
     add_flow_entries dpid, port_a, port_b
-    @patch[dpid] += [port_a, port_b].sort
+    @patch[dpid] << [port_a, port_b].sort
   end
 
   def delete_patch(dpid, port_a, port_b)
     delete_flow_entries dpid, port_a, port_b
-    @patch[dpid] -= [port_a, port_b].sort
+    @patch[dpid].delete([port_a, port_b].sort)
+  end
+
+  def create_mirror_patch(dpid, monitor_port, mirror_port)
+    if add_mirror_flow_entries dpid, monitor_port, mirror_port then
+      @mirror_patch[dpid] << [monitor_port, mirror_port]   
+    end
+  end
+
+  def list_patch(dpid)
+    list = Array.new()
+    list << @patch
+    list << @mirror_patch
+    return list
+  end
+
+  def delete_mirror_patch(dpid, monitor_port, mirror_port)
+    delete_mirror_flow_entries dpid, monitor_port, mirror_port
+    @mirror_patch[dpid].delete([monitor_port, mirror_port])
   end
 
   private
@@ -37,4 +60,61 @@ class PatchPanel < Trema::Controller
     send_flow_mod_delete(dpid, match: Match.new(in_port: port_a))
     send_flow_mod_delete(dpid, match: Match.new(in_port: port_b))
   end
+
+  def add_mirror_flow_entries(dpid, monitor_port, mirror_port)
+    source_port = nil
+    @patch[dpid].each do |port_a, port_b|
+      if port_a == monitor_port then source_port = port_b
+      elsif port_b == monitor_port then source_port = port_a
+      end
+    end
+    if source_port == nil then 
+      logger.info 'Patch panel no exists'
+      return false
+    end
+    send_flow_mod_delete(dpid, match: Match.new(in_port: source_port))
+    send_flow_mod_delete(dpid, match: Match.new(in_port: monitor_port))
+    send_flow_mod_add(dpid,
+                      match: Match.new(in_port: source_port),
+                      actions: [
+                        SendOutPort.new(monitor_port),
+                        SendOutPort.new(mirror_port)
+                      ])
+    send_flow_mod_add(dpid,
+                      match: Match.new(in_port: monitor_port),
+                      actions: [
+                        SendOutPort.new(source_port),
+                        SendOutPort.new(mirror_port)
+                      ])
+    return true
+  end
+
+
+  def delete_mirror_flow_entries(dpid, monitor_port, mirror_port)
+    source_port = nil
+    flag = true;
+    @mirror_patch[dpid].each do |port_a, port_b|
+      if port_a == monitor_port && port_b == mirror_port then flag = false
+      end
+    end
+    if flag == true then return false
+    end
+    @patch[dpid].each do |port_c, port_d|
+      if port_c == monitor_port then source_port = port_d
+      elsif port_d == monitor_port then source_port = port_c
+      end
+    end
+    if source_port == nil then return false
+    end
+    send_flow_mod_delete(dpid, match: Match.new(in_port: source_port))
+    send_flow_mod_delete(dpid, match: Match.new(in_port: monitor_port))
+    send_flow_mod_add(dpid,
+                      match: Match.new(in_port: source_port),
+                      actions: SendOutPort.new(monitor_port))
+    send_flow_mod_add(dpid,
+                      match: Match.new(in_port: monitor_port),
+                      actions: SendOutPort.new(source_port))
+    return true
+  end
+
 end
